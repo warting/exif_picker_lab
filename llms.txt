@@ -1,0 +1,21 @@
+# EXIF Picker Lab
+
+> A single-Activity Android app that compares 5 photo pickers × 4 EXIF read methods on real devices, showing which combinations preserve GPS metadata and which strip it. Use case: settling "does picker X preserve EXIF on device Y" questions empirically.
+
+The Android `PickVisualMedia` photo picker strips EXIF GPS by design. `OpenDocument` may also strip it via redacting providers on some devices. `GetContent` typically preserves EXIF. `MediaStore.setRequireOriginal()` works only against MediaStore-backed URIs (not picker URIs) and only when `ACCESS_MEDIA_LOCATION` is granted. This app makes those differences visible and logs them to `adb logcat -s ExifDebug`.
+
+## Code
+
+- [MainActivity.kt](app/src/main/java/se/premex/exifdebug/MainActivity.kt): Single Activity, Jetpack Compose UI, holds picker launchers and the LazyColumn rendering result cards.
+- [ExifReadMethod.kt](app/src/main/java/se/premex/exifdebug/ExifReadMethod.kt): Enum of 4 EXIF read approaches (FileDescriptor, InputStream, InputStream + STREAM_TYPE_FULL_IMAGE_DATA, setRequireOriginal + FileDescriptor) and the runner.
+- [Pickers.kt](app/src/main/java/se/premex/exifdebug/Pickers.kt): Enum of the 5 pickers (PickVisualMedia, OpenDocument, GetContent, TakePicture, MediaStore-latest) with annotations.
+- [AndroidManifest.xml](app/src/main/AndroidManifest.xml): Permissions (ACCESS_MEDIA_LOCATION, READ_MEDIA_IMAGES, CAMERA) + FileProvider for TakePicture.
+
+## Docs
+
+- [README.md](README.md): User-facing intro, build instructions, picker comparison table, findings summary.
+- [AGENTS.md](AGENTS.md): Conventions and project map for AI coding agents.
+
+## Optional
+
+- [LICENSE](LICENSE): Apache 2.0.

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Camera captures land in cacheDir/captures so the FileProvider can grant
+         the system camera app a content:// URI to write into. -->
+    <cache-path name="captures" path="captures/" />
+</paths>

@@ -1,0 +1,23 @@
+# Built files
+*.apk
+*.aab
+build/
+.gradle/
+.idea/
+*.iml
+local.properties
+captures/
+.cxx/
+.kotlin/
+.DS_Store
+
+# Heap dumps from OOMs
+*.hprof
+java_pid*.hprof
+
+# Keystores
+*.jks
+*.keystore
+
+# Gradle
+gradle.properties.local
