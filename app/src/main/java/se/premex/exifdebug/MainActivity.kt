@@ -2,7 +2,6 @@ package se.premex.exifdebug
 
 import android.Manifest
 import android.content.ContentResolver
-import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -97,7 +96,6 @@ private fun ExifDebugScreen() {
     // Bumped each time `recorder.record()` mutates the in-memory state, so
     // remember-derived UI re-renders. Plain field mutation isn't observable.
     var recorderTick by remember { mutableStateOf(0) }
-    var report by remember { mutableStateOf<String?>(null) }
 
     fun process(uri: Uri?, kind: PickerKind) {
         if (uri == null) {
@@ -121,10 +119,7 @@ private fun ExifDebugScreen() {
                 if (rec.currentPicker == kind) {
                     rec.record(p)
                     recorderTick++
-                    if (rec.isComplete) {
-                        rec.logReport()
-                        report = rec.renderReport()
-                    }
+                    if (rec.isComplete) rec.logReport()
                 }
             }
         } catch (e: Exception) {
@@ -202,9 +197,9 @@ private fun ExifDebugScreen() {
     ) { results ->
         Log.i(TAG, "guided test permission grants: $results")
         recorder = TestRecorder()
-        report = null
     }
     fun startGuidedTest() {
+        pick = null
         val perms = buildList {
             add(Manifest.permission.CAMERA)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -239,7 +234,6 @@ private fun ExifDebugScreen() {
             //   2. Guided test complete (report present) — show the report.
             //   3. Idle — show the welcome + free-mode pickers + last result.
             val activeRecorder = recorder
-            val activeReport = report
             when {
                 activeRecorder != null && !activeRecorder.isComplete -> {
                     recorderTick // observe tick so we re-render on advance
@@ -257,14 +251,10 @@ private fun ExifDebugScreen() {
                             onSkip = {
                                 activeRecorder.skip()
                                 recorderTick++
-                                if (activeRecorder.isComplete) {
-                                    activeRecorder.logReport()
-                                    report = activeRecorder.renderReport()
-                                }
+                                if (activeRecorder.isComplete) activeRecorder.logReport()
                             },
                             onCancel = {
                                 recorder = null
-                                report = null
                                 pick = null
                             },
                         )
@@ -280,26 +270,35 @@ private fun ExifDebugScreen() {
                     }
                 }
 
-                activeReport != null -> {
+                activeRecorder != null && activeRecorder.isComplete -> {
                     item {
                         Text(
-                            "EXIF Picker Lab — test report",
+                            "Test complete",
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.SemiBold,
                         )
+                        Text(
+                            "What preserves GPS on this device:",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    items(PickerKind.entries.toList()) { kind ->
+                        ResultRow(
+                            kind = kind,
+                            result = activeRecorder.resultFor(kind),
+                        )
                     }
                     item {
-                        ReportCard(
-                            markdown = activeReport,
-                            onShare = {
-                                val intent = Intent(Intent.ACTION_SEND).apply {
-                                    type = "text/plain"
-                                    putExtra(Intent.EXTRA_SUBJECT, "EXIF Picker Lab — test report")
-                                    putExtra(Intent.EXTRA_TEXT, activeReport)
-                                }
-                                context.startActivity(Intent.createChooser(intent, "Share report"))
-                            },
-                            onClose = { report = null; recorder = null; pick = null },
+                        OutlinedButton(
+                            onClick = { recorder = null; pick = null },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("Done") }
+                        Text(
+                            "Full report (Markdown) is in logcat under tag ExifDebug — " +
+                                "for AI agents capturing reproductions.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
@@ -576,47 +575,110 @@ private fun GuidedTestCard(
     }
 }
 
+/**
+ * Phone-friendly result row — one per picker. A green/red badge says at a
+ * glance whether ANY read method recovered GPS, then four small chips show
+ * the per-method outcome. No raw URIs, no Markdown — that's all in logcat
+ * for AI agents to consume separately.
+ */
 @Composable
-private fun ReportCard(
-    markdown: String,
-    onShare: () -> Unit,
-    onClose: () -> Unit,
+private fun ResultRow(
+    kind: PickerKind,
+    result: PickResult?,
 ) {
+    val anyOk = result?.readResults?.any { it.latLong != null } == true
+    val anyRun = result != null
+    val (bg, accent) = when {
+        !anyRun -> Color(0xFFF1F3F4) to Color(0xFF5F6368)        // grey: skipped
+        anyOk -> Color(0xFFE6F4EA) to Color(0xFF137333)          // green: GPS recovered
+        else -> Color(0xFFFCEAEA) to Color(0xFFC5221F)           // red: stripped/errored
+    }
+    val statusIcon = when {
+        !anyRun -> "—"
+        anyOk -> "✓"
+        else -> "✗"
+    }
     ElevatedCard(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier
-                .background(Color(0xFFEAF8EF))
+                .background(bg)
                 .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Text(
-                "✓ Test report ready",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                "Logged to logcat under tag ExifDebug between TEST REPORT START / END markers. " +
-                    "Share button copies the Markdown for pasting into a GitHub issue or feeding " +
-                    "to an AI agent.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onShare, modifier = Modifier.weight(1f)) {
-                    Text("Share / copy report")
-                }
-                OutlinedButton(onClick = onClose, modifier = Modifier.weight(1f)) {
-                    Text("Close")
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Text(
+                    statusIcon,
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = accent,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(end = 12.dp),
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        kind.label,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        when {
+                            !anyRun -> "Skipped"
+                            anyOk -> "GPS preserved"
+                            else -> "GPS stripped or read failed"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = accent,
+                    )
                 }
             }
-            SelectionContainer {
-                Text(
-                    markdown,
-                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                )
+            if (result != null) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    result.readResults.forEach { rr ->
+                        MethodChip(
+                            shortLabel = shortLabelFor(rr.method),
+                            ok = rr.latLong != null,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
             }
         }
     }
+}
+
+@Composable
+private fun MethodChip(
+    shortLabel: String,
+    ok: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val (bg, fg) = if (ok) Color(0xFFCEEAD6) to Color(0xFF0D652D)
+    else Color(0xFFF6CFCC) to Color(0xFFA50E0E)
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(bg)
+            .padding(vertical = 6.dp, horizontal = 4.dp),
+    ) {
+        Text(
+            "${if (ok) "✓" else "✗"} $shortLabel",
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Medium,
+            color = fg,
+            modifier = Modifier.fillMaxWidth(),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+        )
+    }
+}
+
+/** Compact read-method names for the per-picker chip row. */
+private fun shortLabelFor(m: ExifReadMethod): String = when (m) {
+    ExifReadMethod.FILE_DESCRIPTOR -> "FD"
+    ExifReadMethod.INPUT_STREAM -> "Stream"
+    ExifReadMethod.INPUT_STREAM_FULL_IMAGE -> "Full"
+    ExifReadMethod.REQUIRE_ORIGINAL_FD -> "Original"
 }
 
 /** Direct MediaStore query for the most recent image. Lets us hand a real

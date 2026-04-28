@@ -61,3 +61,22 @@ There are no automated tests. Validation is empirical: run the app, pick a known
 - "Why does PickVisualMedia not show GPS?" → it strips by design; this is documented Android behaviour.
 - "Why does setRequireOriginal throw?" → only valid on MediaStore-backed URIs, not picker URIs.
 - "Why is GetContent deprecated and we still use it?" → it's deprecated *for the photo-picker use case*, but the photo picker can't preserve EXIF GPS — so when EXIF matters, GetContent is the right choice despite the deprecation.
+
+## Consuming a guided-test report (for AI agents)
+
+When the user runs the in-app guided test, a Markdown report is logged to logcat under tag `ExifDebug` between explicit markers. Capture and parse it as follows:
+
+```bash
+adb logcat -s ExifDebug | sed -n '/=== TEST REPORT START ===/,/=== TEST REPORT END ===/p'
+```
+
+The report contains:
+- Device facts (manufacturer, model, Android version, fingerprint) — useful for narrowing PR scope.
+- A picker × read-method matrix (`✓` / `✗` / `—` per cell) — read this to identify the working combinations on this device.
+- Per-picker URI, authority, MIME, size, display name, and per-method status with full error messages — useful for diagnosing edge cases.
+
+Suggested workflow when a user shows you this output and asks you to fix their app's EXIF flow:
+
+1. Find the first picker in the matrix with a green column for `FD` (FileDescriptor read). That's the picker their production app should use.
+2. If the user's app is using `PickVisualMedia` or `OpenDocument`, open a PR replacing it with `ActionResultContracts.GetContent()` and a `"image/*"` MIME filter. Cite the matrix rows in the PR description as evidence.
+3. Confirm the read path in their app uses `openFileDescriptor` + `ExifInterface(FileDescriptor)`, not `setRequireOriginal()` (which is the wrong tool for picker URIs and will throw `SecurityException`).

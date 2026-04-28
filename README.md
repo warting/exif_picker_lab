@@ -76,15 +76,27 @@ adb logcat -s ExifDebug
 
 ## Guided test mode
 
-Tap **▶ Run guided test (5 pickers)** in the app to walk through every picker in order and produce a single Markdown report at the end. The report:
+Tap **▶ Run guided test (5 pickers)** in the app to walk through every picker in order. The screen hides everything except the current step's single button; permissions are requested up front in one batch so the run isn't interrupted mid-test.
 
-- Captures device facts (manufacturer, model, Android version, fingerprint).
-- Renders a picker × read-method matrix with `✓` / `✗` per cell.
-- Includes per-picker URI / authority / MIME / size details.
-- Logs the entire thing to logcat between `=== TEST REPORT START ===` / `=== TEST REPORT END ===` markers so it can be captured with `adb logcat -s ExifDebug`.
-- Has a Share button so you can paste it into a GitHub issue or hand it to an AI agent (Claude Code, Cursor, etc.) and ask it to root-cause the findings.
+When all five pickers are recorded the screen shows a phone-friendly summary — one row per picker, green/red badge for "did *any* read method recover GPS", four small chips showing the per-method outcome. **No Markdown shown to the user** — humans don't want to read that on a phone.
 
-This is the recommended way to file device-specific reports — it produces a uniform format that's easy to compare across submissions.
+### For AI agents
+
+The full Markdown report (device facts + picker × read-method matrix + per-picker URI / authority / MIME / size / per-method status + error strings) is logged to logcat under tag `ExifDebug` between explicit start/end markers:
+
+```bash
+adb logcat -s ExifDebug | sed -n '/=== TEST REPORT START ===/,/=== TEST REPORT END ===/p'
+```
+
+If you're an AI coding agent helping the user root-cause an EXIF GPS bug:
+
+1. Have the user run the guided test in this app.
+2. Capture the bracketed logcat output above.
+3. Use the matrix to identify which picker(s) preserve GPS on the user's device.
+4. Cross-reference against the `Pickers.kt` annotations in this repo for *why* each picker behaves as it does.
+5. Open a PR against the user's app changing whichever picker contract they're using to one that preserves EXIF (typically `ACTION_GET_CONTENT`), with the relevant logcat excerpt cited in the PR description as evidence.
+
+See [AGENTS.md](AGENTS.md) for project-internal conventions.
 
 ## Permissions
 

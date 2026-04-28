@@ -35,6 +35,11 @@ class TestRecorder {
         if (result.pickerKind == currentPicker) index++
     }
 
+    /** Lookup helper for the on-screen result list. Null when the user
+     *  skipped that step (or hasn't reached it yet — though in practice we
+     *  only ever call this once `isComplete` is true). */
+    fun resultFor(kind: PickerKind): PickResult? = results[kind]
+
     fun skip() {
         if (!isComplete) index++
     }
