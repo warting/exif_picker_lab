@@ -2,6 +2,7 @@ package se.premex.exifdebug
 
 import android.Manifest
 import android.content.ContentResolver
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -89,6 +90,14 @@ private fun ExifDebugScreen() {
     val resolver = context.contentResolver
     var pick by remember { mutableStateOf<PickResult?>(null) }
     var lastError by remember { mutableStateOf<String?>(null) }
+    // Guided mode: a TestRecorder walks through every picker once and produces
+    // a Markdown summary report at the end. The recorder is the source of truth
+    // for "which step are we on"; null means free / manual mode.
+    var recorder by remember { mutableStateOf<TestRecorder?>(null) }
+    // Bumped each time `recorder.record()` mutates the in-memory state, so
+    // remember-derived UI re-renders. Plain field mutation isn't observable.
+    var recorderTick by remember { mutableStateOf(0) }
+    var report by remember { mutableStateOf<String?>(null) }
 
     fun process(uri: Uri?, kind: PickerKind) {
         if (uri == null) {
@@ -97,13 +106,25 @@ private fun ExifDebugScreen() {
         }
         Log.i(TAG, "${kind.name}: picked uri=$uri")
         try {
-            pick = readAllMethods(resolver, uri, kind)
+            val p = readAllMethods(resolver, uri, kind)
+            pick = p
             lastError = null
-            pick?.let { p ->
-                Log.i(TAG, "${kind.name}: size=${p.sizeBytes} mime=${p.mimeType} name=${p.displayName}")
-                p.readResults.forEach { r ->
-                    Log.i(TAG, "  ${r.method.label}: ${r.status} latLon=${r.latLong}")
-                    r.error?.let { Log.w(TAG, "    error: $it") }
+            Log.i(TAG, "${kind.name}: size=${p.sizeBytes} mime=${p.mimeType} name=${p.displayName}")
+            p.readResults.forEach { r ->
+                Log.i(TAG, "  ${r.method.label}: ${r.status} latLon=${r.latLong}")
+                r.error?.let { Log.w(TAG, "    error: $it") }
+            }
+            // If a guided test is running and this pick matches the current
+            // step, advance. Free-mode picks (e.g. user testing one picker
+            // off-script) record nothing.
+            recorder?.let { rec ->
+                if (rec.currentPicker == kind) {
+                    rec.record(p)
+                    recorderTick++
+                    if (rec.isComplete) {
+                        rec.logReport()
+                        report = rec.renderReport()
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -172,10 +193,56 @@ private fun ExifDebugScreen() {
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    "Pick the same photo through each picker. Each pick is read 5 different ways. " +
+                    "Pick the same photo through each picker. Each pick is read 4 different ways. " +
                         "Green rows = GPS recovered.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
+            }
+
+            // Guided test recorder — drives the user through every picker and
+            // emits a paste-into-a-GitHub-issue Markdown report at the end.
+            recorder?.let { rec -> recorderTick // re-read on tick
+                item {
+                    GuidedTestCard(
+                        recorder = rec,
+                        onSkip = {
+                            rec.skip()
+                            recorderTick++
+                            if (rec.isComplete) {
+                                rec.logReport()
+                                report = rec.renderReport()
+                            }
+                        },
+                        onCancel = {
+                            recorder = null
+                            report = null
+                        },
+                    )
+                }
+            }
+            if (recorder == null && report == null) {
+                item {
+                    Button(
+                        onClick = { recorder = TestRecorder(); report = null },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("▶ Run guided test (5 pickers)") }
+                }
+            }
+            report?.let { md ->
+                item {
+                    ReportCard(
+                        markdown = md,
+                        onShare = {
+                            val intent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_SUBJECT, "EXIF Picker Lab — test report")
+                                putExtra(Intent.EXTRA_TEXT, md)
+                            }
+                            context.startActivity(Intent.createChooser(intent, "Share report"))
+                        },
+                        onClose = { report = null; recorder = null },
+                    )
+                }
             }
 
             item {
@@ -406,6 +473,99 @@ private fun queryUriMeta(resolver: ContentResolver, uri: Uri): UriMeta {
     } catch (e: Exception) {
         Log.w(TAG, "queryUriMeta($uri) failed", e)
         UriMeta(null, null, null)
+    }
+}
+
+@Composable
+private fun GuidedTestCard(
+    recorder: TestRecorder,
+    onSkip: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val current = recorder.currentPicker
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier
+                .background(Color(0xFFE8F0FE))
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                "Guided test — step ${(recorder.currentStep + 1).coerceAtMost(recorder.totalSteps)} of ${recorder.totalSteps}",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            if (current != null) {
+                Text(
+                    "Tap the highlighted button below to test ${current.label}. " +
+                        "Pick the SAME known-GPS photo for each step so the comparison is apples-to-apples.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    current.behaviour,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Text(
+                    "All steps recorded. Scroll down to see the report.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onSkip, modifier = Modifier.weight(1f)) {
+                    Text("Skip step")
+                }
+                OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) {
+                    Text("Cancel")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReportCard(
+    markdown: String,
+    onShare: () -> Unit,
+    onClose: () -> Unit,
+) {
+    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .background(Color(0xFFEAF8EF))
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                "✓ Test report ready",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                "Logged to logcat under tag ExifDebug between TEST REPORT START / END markers. " +
+                    "Share button copies the Markdown for pasting into a GitHub issue or feeding " +
+                    "to an AI agent.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onShare, modifier = Modifier.weight(1f)) {
+                    Text("Share / copy report")
+                }
+                OutlinedButton(onClick = onClose, modifier = Modifier.weight(1f)) {
+                    Text("Close")
+                }
+            }
+            SelectionContainer {
+                Text(
+                    markdown,
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                )
+            }
+        }
     }
 }
 

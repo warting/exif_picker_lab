@@ -74,6 +74,18 @@ adb shell am start -n se.premex.exifdebug/.MainActivity
 adb logcat -s ExifDebug
 ```
 
+## Guided test mode
+
+Tap **▶ Run guided test (5 pickers)** in the app to walk through every picker in order and produce a single Markdown report at the end. The report:
+
+- Captures device facts (manufacturer, model, Android version, fingerprint).
+- Renders a picker × read-method matrix with `✓` / `✗` per cell.
+- Includes per-picker URI / authority / MIME / size details.
+- Logs the entire thing to logcat between `=== TEST REPORT START ===` / `=== TEST REPORT END ===` markers so it can be captured with `adb logcat -s ExifDebug`.
+- Has a Share button so you can paste it into a GitHub issue or hand it to an AI agent (Claude Code, Cursor, etc.) and ask it to root-cause the findings.
+
+This is the recommended way to file device-specific reports — it produces a uniform format that's easy to compare across submissions.
+
 ## Permissions
 
 | Permission | Why |
