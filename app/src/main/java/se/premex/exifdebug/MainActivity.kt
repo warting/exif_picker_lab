@@ -161,15 +161,61 @@ private fun ExifDebugScreen() {
         takePicture.launch(uri)
     }
 
-    val mediaLocationPermission = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission(),
-    ) { granted -> Log.i(TAG, "ACCESS_MEDIA_LOCATION granted=$granted") }
-    val readMediaImagesPermission = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission(),
-    ) { granted -> Log.i(TAG, "READ_MEDIA_IMAGES granted=$granted") }
     val cameraPermission = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { granted -> if (granted) launchCamera() else Log.i(TAG, "CAMERA denied") }
+
+    /** Routes the guided test's "test the current picker" tap to the right
+     *  ActivityResultContract launcher. Centralised so the GuidedTestCard
+     *  only needs the current PickerKind, not a bag of launchers. */
+    fun launchPicker(kind: PickerKind) {
+        when (kind) {
+            PickerKind.PICK_VISUAL_MEDIA -> pickPhotoPicker.launch(
+                PickVisualMediaRequest(
+                    ActivityResultContracts.PickVisualMedia.ImageOnly,
+                ),
+            )
+            PickerKind.OPEN_DOCUMENT -> openDocument.launch(arrayOf("image/*"))
+            PickerKind.GET_CONTENT -> getContent.launch("image/*")
+            PickerKind.TAKE_PICTURE -> {
+                val granted = androidx.core.content.ContextCompat.checkSelfPermission(
+                    context, Manifest.permission.CAMERA,
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                if (granted) launchCamera() else cameraPermission.launch(Manifest.permission.CAMERA)
+            }
+            PickerKind.MEDIASTORE_LATEST -> {
+                val ms = pickLatestMediaStoreImage(resolver)
+                if (ms != null) process(ms, PickerKind.MEDIASTORE_LATEST)
+                else lastError = "MediaStore query returned no images. Grant READ_MEDIA_IMAGES?"
+            }
+        }
+    }
+
+    /** Batched permission prompt before the guided test starts so the user
+     *  isn't interrupted by per-step prompts mid-test (which would skew
+     *  results — a denied prompt feels like the picker failed). All three
+     *  permissions are runtime-granted on Android 13+. The recorder is
+     *  created in the result callback regardless of grant decision so the
+     *  test still produces a report (with whatever the OS allowed). */
+    val startGuidedTestPermissions = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions(),
+    ) { results ->
+        Log.i(TAG, "guided test permission grants: $results")
+        recorder = TestRecorder()
+        report = null
+    }
+    fun startGuidedTest() {
+        val perms = buildList {
+            add(Manifest.permission.CAMERA)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                add(Manifest.permission.ACCESS_MEDIA_LOCATION)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                add(Manifest.permission.READ_MEDIA_IMAGES)
+            }
+        }.toTypedArray()
+        startGuidedTestPermissions.launch(perms)
+    }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -186,155 +232,157 @@ private fun ExifDebugScreen() {
             ),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item {
-                Text(
-                    "EXIF Picker Lab",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    "Pick the same photo through each picker. Each pick is read 4 different ways. " +
-                        "Green rows = GPS recovered.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            }
-
-            // Guided test recorder — drives the user through every picker and
-            // emits a paste-into-a-GitHub-issue Markdown report at the end.
-            recorder?.let { rec -> recorderTick // re-read on tick
-                item {
-                    GuidedTestCard(
-                        recorder = rec,
-                        onSkip = {
-                            rec.skip()
-                            recorderTick++
-                            if (rec.isComplete) {
-                                rec.logReport()
-                                report = rec.renderReport()
-                            }
-                        },
-                        onCancel = {
-                            recorder = null
-                            report = null
-                        },
-                    )
-                }
-            }
-            if (recorder == null && report == null) {
-                item {
-                    Button(
-                        onClick = { recorder = TestRecorder(); report = null },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("▶ Run guided test (5 pickers)") }
-                }
-            }
-            report?.let { md ->
-                item {
-                    ReportCard(
-                        markdown = md,
-                        onShare = {
-                            val intent = Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(Intent.EXTRA_SUBJECT, "EXIF Picker Lab — test report")
-                                putExtra(Intent.EXTRA_TEXT, md)
-                            }
-                            context.startActivity(Intent.createChooser(intent, "Share report"))
-                        },
-                        onClose = { report = null; recorder = null },
-                    )
-                }
-            }
-
-            item {
-                Text("Pickers", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            }
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = {
-                            pickPhotoPicker.launch(
-                                PickVisualMediaRequest(
-                                    ActivityResultContracts.PickVisualMedia.ImageOnly,
-                                ),
+            // Three modes, mutually exclusive:
+            //   1. Guided test running — show ONLY the current step's single
+            //      picker button. Hides everything else so the user can't
+            //      get distracted picking off-script.
+            //   2. Guided test complete (report present) — show the report.
+            //   3. Idle — show the welcome + free-mode pickers + last result.
+            val activeRecorder = recorder
+            val activeReport = report
+            when {
+                activeRecorder != null && !activeRecorder.isComplete -> {
+                    recorderTick // observe tick so we re-render on advance
+                    item {
+                        Text(
+                            "EXIF Picker Lab — guided test",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    item {
+                        GuidedTestCard(
+                            recorder = activeRecorder,
+                            onLaunch = { kind -> launchPicker(kind) },
+                            onSkip = {
+                                activeRecorder.skip()
+                                recorderTick++
+                                if (activeRecorder.isComplete) {
+                                    activeRecorder.logReport()
+                                    report = activeRecorder.renderReport()
+                                }
+                            },
+                            onCancel = {
+                                recorder = null
+                                report = null
+                                pick = null
+                            },
+                        )
+                    }
+                    lastError?.let { msg ->
+                        item {
+                            Text(
+                                "Error: $msg",
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodyMedium,
                             )
-                        },
-                        modifier = Modifier.weight(1f),
-                    ) { Text(PickerKind.PICK_VISUAL_MEDIA.label) }
-                    Button(
-                        onClick = { openDocument.launch(arrayOf("image/*")) },
-                        modifier = Modifier.weight(1f),
-                    ) { Text(PickerKind.OPEN_DOCUMENT.label) }
-                }
-            }
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = { getContent.launch("image/*") },
-                        modifier = Modifier.weight(1f),
-                    ) { Text(PickerKind.GET_CONTENT.label) }
-                    Button(
-                        onClick = {
-                            cameraPermission.launch(Manifest.permission.CAMERA)
-                        },
-                        modifier = Modifier.weight(1f),
-                    ) { Text(PickerKind.TAKE_PICTURE.label) }
-                }
-            }
-            item {
-                Button(
-                    onClick = {
-                        val ms = pickLatestMediaStoreImage(resolver)
-                        if (ms != null) process(ms, PickerKind.MEDIASTORE_LATEST)
-                        else lastError = "MediaStore query returned no images. Grant READ_MEDIA_IMAGES?"
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text(PickerKind.MEDIASTORE_LATEST.label) }
-            }
-
-            item {
-                Text(
-                    "Permissions",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        OutlinedButton(
-                            onClick = { mediaLocationPermission.launch(Manifest.permission.ACCESS_MEDIA_LOCATION) },
-                            modifier = Modifier.weight(1f),
-                        ) { Text("Grant ACCESS_MEDIA_LOCATION") }
-                    }
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        OutlinedButton(
-                            onClick = { readMediaImagesPermission.launch(Manifest.permission.READ_MEDIA_IMAGES) },
-                            modifier = Modifier.weight(1f),
-                        ) { Text("Grant READ_MEDIA_IMAGES") }
+                        }
                     }
                 }
-            }
 
-            lastError?.let { msg ->
-                item {
-                    Text(
-                        "Error: $msg",
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
+                activeReport != null -> {
+                    item {
+                        Text(
+                            "EXIF Picker Lab — test report",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    item {
+                        ReportCard(
+                            markdown = activeReport,
+                            onShare = {
+                                val intent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(Intent.EXTRA_SUBJECT, "EXIF Picker Lab — test report")
+                                    putExtra(Intent.EXTRA_TEXT, activeReport)
+                                }
+                                context.startActivity(Intent.createChooser(intent, "Share report"))
+                            },
+                            onClose = { report = null; recorder = null; pick = null },
+                        )
+                    }
                 }
-            }
 
-            pick?.let { p ->
-                item { PickerSummaryCard(p) }
-                item {
-                    Text(
-                        "Read methods",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                    )
+                else -> {
+                    item {
+                        Text(
+                            "EXIF Picker Lab",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            "Pick the same photo through each picker. Each pick is read 4 different ways. " +
+                                "Green rows = GPS recovered.",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                    item {
+                        Button(
+                            onClick = ::startGuidedTest,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("▶ Run guided test (5 pickers)") }
+                    }
+                    item {
+                        Text(
+                            "Or test a single picker freely:",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    item {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = { launchPicker(PickerKind.PICK_VISUAL_MEDIA) },
+                                modifier = Modifier.weight(1f),
+                            ) { Text(PickerKind.PICK_VISUAL_MEDIA.label) }
+                            OutlinedButton(
+                                onClick = { launchPicker(PickerKind.OPEN_DOCUMENT) },
+                                modifier = Modifier.weight(1f),
+                            ) { Text(PickerKind.OPEN_DOCUMENT.label) }
+                        }
+                    }
+                    item {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = { launchPicker(PickerKind.GET_CONTENT) },
+                                modifier = Modifier.weight(1f),
+                            ) { Text(PickerKind.GET_CONTENT.label) }
+                            OutlinedButton(
+                                onClick = { launchPicker(PickerKind.TAKE_PICTURE) },
+                                modifier = Modifier.weight(1f),
+                            ) { Text(PickerKind.TAKE_PICTURE.label) }
+                        }
+                    }
+                    item {
+                        OutlinedButton(
+                            onClick = { launchPicker(PickerKind.MEDIASTORE_LATEST) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text(PickerKind.MEDIASTORE_LATEST.label) }
+                    }
+
+                    lastError?.let { msg ->
+                        item {
+                            Text(
+                                "Error: $msg",
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
+                    }
+
+                    pick?.let { p ->
+                        item { PickerSummaryCard(p) }
+                        item {
+                            Text(
+                                "Read methods",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                        items(p.readResults) { r -> ReadMethodCard(r) }
+                    }
                 }
-                items(p.readResults) { r -> ReadMethodCard(r) }
             }
         }
     }
@@ -479,47 +527,49 @@ private fun queryUriMeta(resolver: ContentResolver, uri: Uri): UriMeta {
 @Composable
 private fun GuidedTestCard(
     recorder: TestRecorder,
+    onLaunch: (PickerKind) -> Unit,
     onSkip: () -> Unit,
     onCancel: () -> Unit,
 ) {
-    val current = recorder.currentPicker
-    ElevatedCard(
-        modifier = Modifier.fillMaxWidth(),
-    ) {
+    val current = recorder.currentPicker ?: return
+    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier
                 .background(Color(0xFFE8F0FE))
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                "Guided test — step ${(recorder.currentStep + 1).coerceAtMost(recorder.totalSteps)} of ${recorder.totalSteps}",
-                style = MaterialTheme.typography.titleSmall,
+                "Step ${(recorder.currentStep + 1).coerceAtMost(recorder.totalSteps)} of ${recorder.totalSteps}",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.SemiBold,
             )
-            if (current != null) {
-                Text(
-                    "Tap the highlighted button below to test ${current.label}. " +
-                        "Pick the SAME known-GPS photo for each step so the comparison is apples-to-apples.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                Text(
-                    current.behaviour,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            } else {
-                Text(
-                    "All steps recorded. Scroll down to see the report.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            }
+            Text(
+                current.label,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                current.behaviour,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "Pick the SAME known-GPS photo each step so the comparison is apples-to-apples.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Button(
+                onClick = { onLaunch(current) },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Test ${current.label}") }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = onSkip, modifier = Modifier.weight(1f)) {
                     Text("Skip step")
                 }
                 OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) {
-                    Text("Cancel")
+                    Text("Cancel test")
                 }
             }
         }
