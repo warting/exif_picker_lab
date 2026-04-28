@@ -1,38 +1,46 @@
 package se.premex.exifdebug
 
-import android.content.Context
 import android.os.Build
 import android.util.Log
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 
 /**
  * Guided test runner: walks the user through every picker, records results,
  * and produces a single Markdown report at the end. The report is:
  *  1. Logged to logcat under tag `ExifDebug` (for `adb logcat -s ExifDebug`).
- *  2. Shown on-screen with a Share button.
- *  3. Suitable for pasting into a GitHub issue or handing to an AI agent
- *     to reason about and turn into a PR.
+ *  2. Mapped onto the on-screen result rows in [MainActivity].
+ *  3. Suitable for AI agents to consume and use for opening PRs against the
+ *     user's app.
  *
- * No persistence — the run is in-memory only. Tap the recorder again to
- * start over.
+ * Internal mutable state lives on Compose state holders so any composable
+ * reading [currentPicker] / [currentStep] / [resultFor] / [isComplete] is
+ * automatically re-invoked on advance. Without this Compose smart-skips
+ * children whose parameter (the recorder reference) hasn't changed by
+ * identity, even though its insides have — which manifested as "I picked
+ * a photo but the screen didn't move on".
+ *
+ * No persistence — the run is in-memory only. Tap the start button again
+ * to begin a fresh run.
  */
 class TestRecorder {
     /** Order matters: we walk through the list in this sequence. */
     val steps: List<PickerKind> = PickerKind.entries
 
-    private val results = mutableMapOf<PickerKind, PickResult>()
-    private var index: Int = 0
+    private val results = mutableStateMapOf<PickerKind, PickResult>()
+    private val indexState = mutableIntStateOf(0)
     private val deviceFacts: List<Pair<String, String>> = collectDeviceFacts()
 
-    val currentStep: Int get() = index
+    val currentStep: Int get() = indexState.intValue
     val totalSteps: Int = steps.size
-    val currentPicker: PickerKind? get() = steps.getOrNull(index)
-    val isComplete: Boolean get() = index >= steps.size
+    val currentPicker: PickerKind? get() = steps.getOrNull(indexState.intValue)
+    val isComplete: Boolean get() = indexState.intValue >= steps.size
 
     fun record(result: PickResult) {
         results[result.pickerKind] = result
         // Only advance if the recorded picker matches the current step. This
         // way a stray free-mode pick mid-test doesn't skip ahead.
-        if (result.pickerKind == currentPicker) index++
+        if (result.pickerKind == currentPicker) indexState.intValue++
     }
 
     /** Lookup helper for the on-screen result list. Null when the user
@@ -41,12 +49,12 @@ class TestRecorder {
     fun resultFor(kind: PickerKind): PickResult? = results[kind]
 
     fun skip() {
-        if (!isComplete) index++
+        if (!isComplete) indexState.intValue++
     }
 
     fun reset() {
         results.clear()
-        index = 0
+        indexState.intValue = 0
     }
 
     /** Render a Markdown report safe to paste into a GitHub issue. */

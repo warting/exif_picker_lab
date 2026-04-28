@@ -9,27 +9,37 @@ package se.premex.exifdebug
 enum class PickerKind(val label: String, val behaviour: String) {
     PICK_VISUAL_MEDIA(
         label = "PickVisualMedia",
-        behaviour = "System photo picker (ACTION_PICK_IMAGES). " +
-            "Returns a redacted copy — EXIF GPS is stripped by design. " +
-            "setRequireOriginal() does not apply. Source: Android docs.",
+        behaviour = "System photo picker (ACTION_PICK_IMAGES). Returns a " +
+            "redacted copy — EXIF GPS is stripped by design and there is " +
+            "no recovery path. setRequireOriginal() throws " +
+            "UnsupportedOperationException for picker URIs.",
     ),
     OPEN_DOCUMENT(
         label = "OpenDocument",
         behaviour = "Storage Access Framework (ACTION_OPEN_DOCUMENT). " +
-            "Returns a DocumentProvider URI to the original file in theory, " +
-            "but on Pixel devices may route through a redacting provider in practice.",
+            "Returns a com.android.providers.media.documents URI; reading " +
+            "via openFileDescriptor / openInputStream gives the original " +
+            "file with EXIF intact. setRequireOriginal() throws " +
+            "SecurityException (extra ACTION_OPEN_DOCUMENT-grade permission " +
+            "needed) — but you don't need it.",
     ),
     GET_CONTENT(
         label = "GetContent",
-        behaviour = "Legacy chooser (ACTION_GET_CONTENT). The system asks an " +
-            "app — Files / Gallery / Photos — to provide the image. The " +
-            "selected app's URI typically exposes the original bytes intact.",
+        behaviour = "Legacy chooser (ACTION_GET_CONTENT) — but the system " +
+            "now routes it through a picker variant whose URI " +
+            "(content://media/picker_get_content/…) is treated as a " +
+            "MediaStore URI. EXIF is intact; setRequireOriginal() also " +
+            "succeeds. Recommended when you need EXIF GPS from a user-" +
+            "picked photo.",
     ),
     TAKE_PICTURE(
         label = "TakePicture",
         behaviour = "ACTION_IMAGE_CAPTURE into a FileProvider URI we own. " +
-            "EXIF is whatever the camera app stamps — modern Android camera " +
-            "apps include GPS when location services are on.",
+            "EXIF is whatever the camera app stamps. GPS is gated by the " +
+            "camera app's own 'Save location' toggle, which is independent " +
+            "from system location permission — Pixel Camera defaults to " +
+            "OFF. If GPS is missing, ask the user to enable it in their " +
+            "camera app's settings.",
     ),
     MEDIASTORE_LATEST(
         label = "MediaStore (latest)",

@@ -41,10 +41,10 @@ Pick the same known-GPS photo through each picker; each pick is read four ways:
 
 | Picker | Contract | What it does |
 |---|---|---|
-| **PickVisualMedia** | `ACTION_PICK_IMAGES` | Android's modern photo picker. Returns a redacted copy — EXIF GPS is stripped *by design*. `setRequireOriginal()` does not apply. No path to recover GPS through this picker. |
-| **OpenDocument** | `ACTION_OPEN_DOCUMENT` | Storage Access Framework. Should return DocumentProvider URIs to original files; on some Pixel devices routes through a redacting provider in practice. |
-| **GetContent** | `ACTION_GET_CONTENT` | Legacy chooser — the system asks an app (Files / Gallery / Photos) to provide the image. The selected app's URI typically exposes the original bytes intact. |
-| **TakePicture** | `ACTION_IMAGE_CAPTURE` | Camera writes a fresh JPEG to a `FileProvider` URI we own. EXIF is whatever the camera app stamped — modern camera apps include GPS when location services are on *and* the camera app's own "save location" toggle is on. |
+| **PickVisualMedia** | `ACTION_PICK_IMAGES` | Android's modern photo picker. Returns a redacted copy — EXIF GPS is stripped *by design*. `setRequireOriginal()` throws `UnsupportedOperationException` for picker URIs. **No recovery path.** |
+| **OpenDocument** | `ACTION_OPEN_DOCUMENT` | Storage Access Framework. Returns a `com.android.providers.media.documents` URI; `openFileDescriptor` / `openInputStream` reads give the original file with **EXIF intact**. `setRequireOriginal()` throws `SecurityException` but you don't need it. |
+| **GetContent** | `ACTION_GET_CONTENT` | Legacy on paper — but the system now routes it through a picker variant whose URI (`content://media/picker_get_content/…`) is treated as a MediaStore URI. **EXIF intact AND `setRequireOriginal()` succeeds.** Recommended when you need EXIF GPS from a user-picked photo. |
+| **TakePicture** | `ACTION_IMAGE_CAPTURE` | Camera writes a fresh JPEG to a `FileProvider` URI we own. EXIF is whatever the camera app stamps. **GPS is gated by the camera app's own "Save location" toggle** — Pixel Camera defaults to OFF, independent of system location permission. If GPS is missing, the user has to flip that toggle. |
 | **MediaStore (latest)** | `MediaStore.Images.Media` | Direct query. Returns the only kind of URI `setRequireOriginal()` actually upgrades. Requires `READ_MEDIA_IMAGES` (API 33+). |
 
 ## EXIF read methods compared
@@ -56,13 +56,21 @@ Pick the same known-GPS photo through each picker; each pick is read four ways:
 | `openInputStream` → `ExifInterface(stream, STREAM_TYPE_FULL_IMAGE_DATA)` | Tells ExifInterface to scan the whole stream. Edge cases for HEIF / non-JPEG. |
 | `MediaStore.setRequireOriginal(uri)` → FileDescriptor | Upgrades the URI to `?requireOriginal=1` first. Only succeeds on MediaStore URIs *and* with `ACCESS_MEDIA_LOCATION` granted. Throws `SecurityException` on picker-supplied URIs. |
 
-## Findings (Pixel 10, Android 16)
+## Findings (Pixel 10 Pro XL, Android 16)
 
-| | PickVisualMedia | OpenDocument | GetContent | TakePicture | MediaStore + AML |
+| | PickVisualMedia | OpenDocument | GetContent | TakePicture | MediaStore (latest) |
 |---|---|---|---|---|---|
-| EXIF GPS | ✗ stripped | ✗ redacted | ✓ preserved | ✓ if camera stamps | ✓ original |
+| `openFileDescriptor → FD` | ✗ stripped | ✓ | ✓ | ✗ camera didn't stamp | ✓ |
+| `openInputStream` | ✗ | ✓ | ✓ | ✗ | ✓ |
+| `STREAM_TYPE_FULL_IMAGE_DATA` | ✗ | ✓ | ✓ | ✗ | ✓ |
+| `setRequireOriginal → FD` | ✗ `UnsupportedOperationException` | ✗ `SecurityException` | ✓ | ✗ | ✓ |
 
-`setRequireOriginal()` is the **wrong tool for picker URIs** — it errors instead of helping. Use it only against URIs you fetched from `MediaStore.Images.Media` directly.
+Take-aways:
+
+1. **Three pickers give you EXIF on Android 16:** `OpenDocument`, `GetContent`, and `MediaStore`. Pick whichever has the UX you want.
+2. **`setRequireOriginal()` is the wrong tool for picker URIs** — it throws on `PickVisualMedia` (`UnsupportedOperationException`) and `OpenDocument` (`SecurityException`). Use it only against URIs you fetched from `MediaStore.Images.Media` directly, or via `GetContent` (whose URI now happens to be MediaStore-backed).
+3. **`PickVisualMedia` is unrecoverable** if you need EXIF GPS — switch pickers, don't try to massage the URI.
+4. **`TakePicture` only gets GPS if the camera app stamped it.** That's gated by the camera app's own "Save location" toggle (Pixel Camera defaults to OFF), independent of system location permission. Live device GPS at the moment of capture is a fine fallback for fresh photos.
 
 ## Build & run
 

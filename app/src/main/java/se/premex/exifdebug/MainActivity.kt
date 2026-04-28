@@ -92,10 +92,10 @@ private fun ExifDebugScreen() {
     // Guided mode: a TestRecorder walks through every picker once and produces
     // a Markdown summary report at the end. The recorder is the source of truth
     // for "which step are we on"; null means free / manual mode.
+    // The recorder owns its own Compose state internally (mutableIntStateOf +
+    // mutableStateMapOf) so any composable reading currentPicker/currentStep/
+    // results auto-recomposes on advance. No tick workaround needed.
     var recorder by remember { mutableStateOf<TestRecorder?>(null) }
-    // Bumped each time `recorder.record()` mutates the in-memory state, so
-    // remember-derived UI re-renders. Plain field mutation isn't observable.
-    var recorderTick by remember { mutableStateOf(0) }
 
     fun process(uri: Uri?, kind: PickerKind) {
         if (uri == null) {
@@ -118,7 +118,6 @@ private fun ExifDebugScreen() {
             recorder?.let { rec ->
                 if (rec.currentPicker == kind) {
                     rec.record(p)
-                    recorderTick++
                     if (rec.isComplete) rec.logReport()
                 }
             }
@@ -236,7 +235,6 @@ private fun ExifDebugScreen() {
             val activeRecorder = recorder
             when {
                 activeRecorder != null && !activeRecorder.isComplete -> {
-                    recorderTick // observe tick so we re-render on advance
                     item {
                         Text(
                             "EXIF Picker Lab — guided test",
@@ -250,7 +248,6 @@ private fun ExifDebugScreen() {
                             onLaunch = { kind -> launchPicker(kind) },
                             onSkip = {
                                 activeRecorder.skip()
-                                recorderTick++
                                 if (activeRecorder.isComplete) activeRecorder.logReport()
                             },
                             onCancel = {
